@@ -8,7 +8,10 @@
 
 ## Step 0: 잔여 Worktree 복구 탐지
 
-이전 실행이 중단된 경우를 감지한다:
+이전 실행이 중단된 경우를 감지한다.
+
+1. `logs/status.json` 존재 확인 → 있으면 이전 상태 로드하여 교차 판단
+2. 없으면 git 상태만으로 판단:
 
 ```bash
 git worktree list --porcelain | grep "^worktree" | grep "batch-" | while read _ path; do
@@ -63,17 +66,8 @@ mkdir -p logs proposals reviews
       "status": "pending",
       "unplannedWrites": [],
       "workers": {
-        "#263": { "status": "pending", "pr": null, "review": null },
-        "#264": { "status": "pending", "pr": null, "review": null }
-      }
-    },
-    "batch-b": {
-      "agentId": null,
-      "status": "pending",
-      "unplannedWrites": [],
-      "workers": {
-        "#295": { "status": "pending", "pr": null, "review": null },
-        "#296": { "status": "pending", "pr": null, "review": null }
+        "#263": { "status": "pending", "pr": null, "review": null, "priority": "high", "reviewLevel": "L2" },
+        "#264": { "status": "pending", "pr": null, "review": null, "priority": "medium", "reviewLevel": "L1" }
       }
     }
   },
@@ -92,10 +86,36 @@ mkdir -p logs proposals reviews
 - {BATCH_NAME}: 배치 이름
 - {BRANCH}: 브랜치명
 - {WORKTREE_PATH}: worktree 절대경로
-- {WORKERS}: 워커 목록 (이슈 번호 + Write 허용 파일 + 리뷰 레벨)
+- {WORKERS}: 워커 목록 (이슈 번호 + Write 허용 파일 + 리뷰 레벨 + priority)
+- {SPECS}: 각 이슈의 명세 전문 (1M 컨텍스트 활용 — 오케스트레이터가 전체 맥락을 파악하여 워커 간 잠재 충돌 감지 및 실행 순서 최적화)
 - {MERGE_PRIORITY}: 머지 순서 기준
 
 오케스트레이터에게 **워커→리뷰어 1:1 페어 실행** 지시를 포함한다.
+
+**워커 프롬프트 끝에 리마인더 + 랜덤 팁 주입:**
+
+워커 프롬프트의 **맨 끝**에 아래 블록을 추가한다 (recency bias 활용 — 컨텍스트 끝이 가장 영향력 강함):
+
+```
+---
+⚠️ 반드시 지켜야 할 규칙 (매 작업 종료 전 확인)
+- [ ] 커밋 전 포맷터 실행 (prettier, black 등 프로젝트에 맞게)
+- [ ] 수정 파일이 Write 허용 목록 안에 있는지 확인
+- [ ] 테스트 통과
+- [ ] lint 통과
+- [ ] 빌드 통과
+
+⏱️ 턴 예산: 22턴 중 현재 진행 중. 18턴 이상 소진했다면 즉시 정리하고 커밋 준비.
+
+💡 팁:
+- {랜덤 팁 1 — 프로젝트 tip-pool.json에서 추출, 없으면 일반 팁}
+- {랜덤 팁 2}
+```
+
+프로젝트에 `scripts/pipeline-cli.mjs`가 있으면 `node scripts/pipeline-cli.mjs tips <category>`로 팁을 추출.
+없으면 오케스트레이터가 프로젝트 특성에 맞는 일반 팁 2개를 직접 작성.
+
+**워커 사전 선언:** 워커는 구현 시작 전에 수정 예정 파일과 접근 방식을 선언한다. 오케스트레이터가 다른 워커와 파일 겹침/스코프 이탈을 검증하고, Write 허용 목록에 없는 파일이 포함되면 거부한다.
 
 ## Step 3: 백그라운드 병렬 실행
 
@@ -145,6 +165,8 @@ Reviewer (L1→Sonnet / L2→Opus) → 명세 검증
 **리뷰어 입력**:
 - GitHub 이슈 본문 (명세)
 - PR diff (`gh pr diff`)
+- 변경된 파일 전문 (1M 컨텍스트 활용 — diff뿐 아니라 파일 전체를 읽고 주변 코드와의 정합성 검증)
+- 관련 코드 (import/export 의존 파일, 기존 테스트 파일)
 
 **검증 항목**:
 
@@ -153,8 +175,9 @@ Reviewer (L1→Sonnet / L2→Opus) → 명세 검증
 | 1 | 명세 충족 | 이슈 체크리스트가 코드에 반영됐는가 |
 | 2 | 누락 확인 | 명세에 있는데 구현 안 된 항목 |
 | 3 | 과잉 구현 | 명세에 없는데 추가된 코드 |
-| 4 | 부작용 | 기존 기능에 영향 주는 변경 |
-| 5 | (L2만) 아키텍처 정합성 | 프로젝트 패턴/구조와 일치하는가 |
+| 4 | 부작용 | 기존 기능에 영향 주는 변경 (전체 코드 맥락에서 판단) |
+| 5 | unplannedWrites 검증 | 명세 외 파일 변경/생성이 합리적인지 판정 (추출/리팩토링 vs 과잉) |
+| 6 | (L2만) 아키텍처 정합성 | 프로젝트 패턴/구조와 일치하는가 |
 
 **판정**:
 
@@ -182,7 +205,35 @@ git diff --name-only main..
 "unplannedWrites": ["src/components/layout/price-refresh-button.tsx"]
 ```
 
-이 정보는 충돌 발생 시 원인 추적용이다. 자동 차단하지 않음.
+unplannedWrites는 **5-1 리뷰어가 명시적으로 검증**한다 (검증 항목 #5).
+
+### 5-1c. CI 실패 자동 피드백 루프
+
+PR 생성 후 CI가 실패하면, 오케스트레이터가 자동으로 피드백 루프를 실행한다:
+
+```
+CI 실패 감지 (gh pr checks)
+  → CI 로그에서 에러 메시지 파싱
+  → 자동 수정 가능 여부 판단:
+    - format 실패 → 포맷터 실행 + 재커밋 + 재push (자동)
+    - lint 실패 (--fix 가능) → lint --fix + 재커밋 + 재push (자동)
+    - test/build 실패 → 에러 메시지를 워커에 재주입하여 수정 지시 (최대 2회)
+  → 2회 재시도 후에도 실패 → BLOCKED 처리
+```
+
+### 5-1d. 실패 → 팁 자동 성장
+
+프로젝트에 `scripts/pipeline-cli.mjs`가 있으면, CI 실패 또는 리뷰어 FAIL 발생 시 팁 풀에 자동 등록한다:
+
+```bash
+# CI format 실패 시
+node scripts/pipeline-cli.mjs bump-tip "prettier"
+
+# 리뷰어 FAIL 시
+node scripts/pipeline-cli.mjs add-tip <category> "<FAIL 핵심 사유 1줄>"
+```
+
+반복되는 실패일수록 해당 팁의 가중치가 증가하여 랜덤 추출 확률이 높아진다.
 
 ### 5-2. PR 처리 및 CI 확인
 
@@ -223,12 +274,27 @@ PR 생성/머지 시 `logs/status.json` 업데이트: 해당 워커의 `"status"
 
 날짜 / 처리 이슈 / PR / 실행 방식
 
+## 우선순위 분포
+- priority:high: N개
+- priority:medium: M개
+- priority:low: K개
+
 ## 워크플로우 의사결정 (이번 세션에서 새로 결정된 것)
 - 사용자가 결정한 것: 어떤 맥락에서 왜 결정했는지
 - Claude가 제안하고 사용자가 승인한 것
 
 ## 이슈별 상세
 각 이슈마다: 문제 → 의사결정 근거 → 변경 파일 → 리뷰 결과 (L1/L2, PASS/FAIL) → 추후 주의사항
+
+## 명세 외 변경 (unplannedWrites)
+| 이슈 | 파일 | 리뷰어 판정 | 사유 |
+|------|------|------------|------|
+| #N | src/... | 허용 | 합리적 추출 |
+
+## 리뷰어 피드백 요약
+PASS 포함 리뷰어 코멘트 중 향후 참고할 내용:
+- #N: "..."
+- #M: "..."
 
 ## 진행 과정
 배치 구성 / 테스트 결과 / 리뷰 결과 / CI 결과 / 머지 과정 (충돌·문제 포함)
