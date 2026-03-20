@@ -1,4 +1,4 @@
-> context_tier: 1m
+> 잔여 Worktree · 브랜치 정리 | context_tier: 1m
 
 에이전트 실행 후 남은 worktree와 브랜치를 정리합니다.
 

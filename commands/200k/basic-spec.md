@@ -1,4 +1,4 @@
-> context_tier: 200k
+> 이슈 구현 명세서 작성 | context_tier: 200k
 
 GitHub 이슈를 분석하여 구현 명세서를 작성하고 이슈 본문에 기록합니다.
 

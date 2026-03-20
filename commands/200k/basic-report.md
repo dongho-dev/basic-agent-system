@@ -1,4 +1,4 @@
-> context_tier: 1m
+> 파이프라인 회고 보고서 | context_tier: 200k
 
 파이프라인 회고 보고서를 작성합니다.
 

@@ -1,4 +1,4 @@
-> context_tier: 1m
+> Worktree 격리 병렬 실행 + 리뷰 + PR | context_tier: 1m
 
 멀티 에이전트 시스템을 실행합니다. 배치 계획을 받아서 실행만 합니다.
 
