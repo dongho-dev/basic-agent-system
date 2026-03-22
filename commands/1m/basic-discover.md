@@ -4,6 +4,14 @@
 
 인자: `$ARGUMENTS` (선택, 집중 영역 지정 예: `feature`, `dx`, `architecture`. 없으면 전체 관심사 실행)
 
+## Step 0: 학습 데이터 로드
+
+```bash
+cat logs/audit-learning.json 2>/dev/null || echo '{"false_positives":[],"true_positives":[]}'
+```
+
+이전 감사의 오탐/채택 패턴을 로드한다. 파일이 없으면 빈 상태로 시작 (첫 실행).
+
 ## Step 1: 기존 이슈 수집 + 라벨 사전체크
 
 ```bash
@@ -86,6 +94,14 @@ gh label list --json name
 - "있으면 좋겠다" 수준이 아니라 코드를 읽고 구체적 근거가 있는 제안만 한다
 - 버그/취약점은 여기서 다루지 않는다 (audit 영역)
 - 프레임워크/라이브러리 프리미티브는 대상이 아니다
+
+## 이전 감사 학습 데이터 (Step 0에서 로드한 내용이 있을 때만 포함)
+
+### 오탐 패턴 (제안하지 마라)
+{audit-learning.json의 false_positives에서 해당 agent 관심사만 필터링하여 나열}
+
+### 잘 찾은 패턴 (더 찾아라)
+{audit-learning.json의 true_positives에서 해당 agent 관심사만 필터링하여 나열}
 ```
 
 ## Step 4: 발견 통합 + 이슈 그룹핑
@@ -94,10 +110,11 @@ Agent 결과를 수집하여:
 
 1. **중복 제거** — 같은 영역/파일을 여러 agent가 제안한 경우 병합
 2. **기존 이슈 대조** — Step 1에서 수집한 open 이슈와 비교 (제목 + body), 이미 있으면 스킵
-3. **그룹핑 판단**:
+3. **오탐 패턴 대조** — Step 0에서 로드한 `audit-learning.json`의 `false_positives`와 비교. 제안 요약이 기존 오탐 pattern과 유사하고 file_pattern이 일치하면 자동 스킵. 매칭 시 해당 항목의 count +1, last_seen 갱신.
+4. **그룹핑 판단**:
    - 관련된 제안 → 하나의 이슈로 그룹 (예: "사용자 설정 기능" 관련 여러 제안)
    - 독립적인 제안 → 단독 이슈
-4. **자동 필터링 — 이슈 생성 대상 결정**:
+5. **자동 필터링 — 이슈 생성 대상 결정**:
    - 근거 "확인됨" + 임팩트 높음/중간 → **자동 생성**
    - 근거 "확인됨" + 임팩트 낮음 → 본체가 2차 판단 → 의미 있으면 생성, 아니면 요약에만 기록
    - 근거 "추정" → 본체가 해당 코드를 직접 Read로 확인 → 진짜면 생성, 아니면 버림
@@ -178,3 +195,12 @@ EOF
 
 다음 단계: `/basic-spec 501 502 503` 으로 스펙 생성
 ```
+
+## Step 7: 학습 데이터 갱신
+
+감사 결과를 `logs/audit-learning.json`에 반영한다:
+
+1. **새 오탐** (Step 4에서 버린 항목 중 신규 패턴) → `false_positives`에 추가 (`pattern`, `file_pattern`, `agent`, `reason`, `count: 1`, `last_seen`)
+2. **기존 오탐 반복** → `count` +1, `last_seen` 갱신
+3. **새 채택** (이슈 생성된 항목) → `true_positives`에서 유사 패턴 검색. 있으면 `adopted_count` +1, 없으면 새로 추가
+4. **만료 정리** → `last_seen`이 90일 이상 지난 `false_positives` 항목은 제거 (코드 변경 후 재검사하도록)

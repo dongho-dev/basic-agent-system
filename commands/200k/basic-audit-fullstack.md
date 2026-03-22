@@ -4,6 +4,14 @@
 
 인자: `$ARGUMENTS` (선택, 집중 영역 지정 예: `security`, `error-handling`, `ux`. 없으면 전체 관심사 실행)
 
+## Step 0: 학습 데이터 로드
+
+```bash
+cat logs/audit-learning.json 2>/dev/null || echo '{"false_positives":[],"true_positives":[]}'
+```
+
+이전 감사의 오탐/채택 패턴을 로드한다. 파일이 없으면 빈 상태로 시작 (첫 실행).
+
 ## Step 1: 기존 이슈 수집 + 라벨 사전체크
 
 ```bash
@@ -16,7 +24,7 @@ gh label list --json name
 
 ## Step 2: 관심사별 Explore Agent 병렬 실행
 
-7개 관심사 × 관심사당 1개 Explore Agent(model: **sonnet**)를 **병렬로** 실행한다. `$ARGUMENTS`로 영역이 지정된 경우 해당 agent만 실행한다 (예: `security` → Agent B1 + F1만, `hygiene` → Agent C1만).
+8개 관심사 × 관심사당 1개 Explore Agent(model: **sonnet**)를 **병렬로** 실행한다. `$ARGUMENTS`로 영역이 지정된 경우 해당 agent만 실행한다 (예: `security` → Agent B1 + F1만, `hygiene` → Agent C1만, `cohesion` → Agent C2만).
 
 **agent 수 조정:** 대상 파일이 많아 단일 agent의 컨텍스트로 부족할 경우, 해당 관심사를 디렉토리별로 분할하여 복수 agent를 실행한다.
 
@@ -54,6 +62,10 @@ gh label list --json name
 
 프로젝트의 백엔드 + 프론트엔드 소스 코드 전반을 탐색하여 코드 위생 문제를 찾는다. 코드를 직접 읽고 문제를 특정하라. 대상: 미사용 import/변수, dead code, console.log/debugger, TODO/FIXME, 네이밍 불일치.
 
+#### Agent C2: 응집도 분석
+
+프로젝트의 백엔드 + 프론트엔드 주요 파일들을 읽고 코드 배치의 응집도 문제를 찾는다. 분리 후보(한 파일에 독립적 관심사 혼재, 상태 공유 없음)와 합체 후보(같은 도메인/상태 로직이 파일 간 분산)를 찾아라. 크기가 아니라 응집도가 기준.
+
 ### Agent 공통 지시
 
 각 Agent에게 전달할 지시:
@@ -80,19 +92,28 @@ UI 라이브러리 프리미티브(shadcn 등)는 감사하지 않는다.
 - 추정이라도 의심되면 보고한다 (본체가 2차 판단)
 - UI 라이브러리 프리미티브(shadcn 등)는 감사하지 않는다
 - 이미 해결된 것은 보고하지 않는다
+
+## 이전 감사 학습 데이터 (Step 0에서 로드한 내용이 있을 때만 포함)
+
+### 오탐 패턴 (보고하지 마라)
+{audit-learning.json의 false_positives에서 해당 agent 관심사만 필터링하여 나열}
+
+### 잘 찾은 패턴 (더 찾아라)
+{audit-learning.json의 true_positives에서 해당 agent 관심사만 필터링하여 나열}
 ```
 
 ## Step 3: 발견 통합 + 이슈 그룹핑
 
-6개 Agent 결과를 수집하여:
+7개 Agent 결과를 수집하여:
 
 1. **중복 제거** — 같은 파일:라인이 여러 agent에서 보고된 경우 병합
 2. **크로스 레이어 발견** — 백엔드/프론트엔드 양쪽에서 관련된 문제(예: API 응답 형식 ↔ 프론트 파싱 불일치)는 하나의 이슈로 묶는다
 3. **기존 이슈 대조** — Step 1에서 수집한 open 이슈와 비교, 이미 있으면 스킵
-4. **그룹핑 판단**:
+4. **오탐 패턴 대조** — Step 0에서 로드한 `audit-learning.json`의 `false_positives`와 비교. 발견 요약이 기존 오탐 pattern과 유사하고 file_pattern이 일치하면 자동 스킵. 매칭 시 count +1, last_seen 갱신.
+5. **그룹핑 판단**:
    - 같은 패턴의 반복 → 하나의 이슈로 그룹
    - 고유한 문제 → 단독 이슈
-5. **자동 필터링 — 이슈 생성 대상 결정**:
+6. **자동 필터링 — 이슈 생성 대상 결정**:
    - 근거 "확인됨" + 기존 이슈와 중복 아님 → **자동 생성**
    - 근거 "추정" → 본체가 해당 파일:라인을 직접 Read로 읽고 2차 판단 → 진짜면 생성, 아니면 버림
    - 기존 이슈와 겹침 → **생성하지 않음** (스킵 로그에 기록)
@@ -133,6 +154,7 @@ EOF
 - API 일관성 → `refactor`
 - UX/접근성 → `enhancement`
 - 성능 → `performance`
+- 응집도 → `refactor`
 
 **실행 방식:** 이슈별로 독립된 Bash tool call을 만들어 한 메시지에서 병렬 실행. 에이전트 오버헤드 없이 빠르게 생성.
 
@@ -155,3 +177,12 @@ EOF
 
 다음 단계: `/spec 401 402 403` 으로 스펙 생성
 ```
+
+## Step 6: 학습 데이터 갱신
+
+감사 결과를 `logs/audit-learning.json`에 반영한다:
+
+1. **새 오탐** (Step 3에서 버린 항목 중 신규 패턴) → `false_positives`에 추가 (`pattern`, `file_pattern`, `agent`, `reason`, `count: 1`, `last_seen`)
+2. **기존 오탐 반복** → `count` +1, `last_seen` 갱신
+3. **새 채택** (이슈 생성된 항목) → `true_positives`에서 유사 패턴 검색. 있으면 `adopted_count` +1, 없으면 새로 추가
+4. **만료 정리** → `last_seen`이 90일 이상 지난 `false_positives` 항목은 제거 (코드 변경 후 재검사하도록)
