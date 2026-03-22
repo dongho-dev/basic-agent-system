@@ -97,3 +97,11 @@ C2: 변경 결합도 + 응집도
 | 파일 매핑 누락 | spec body의 Write 파일과 agent 보고 파일 수 불일치 시 경고 |
 
 원칙: LLM 판단에 의존하지 않고, 코드가 차단한다.
+
+## 7. Claude Code 기능 활용 검토 (미결: 하나씩 논의 필요)
+
+| 우선순위 | 항목 | 현황 | 검토 포인트 |
+|----------|------|------|------------|
+| 높음 | PreToolUse Hook으로 pre-merge 강제 | CLI 방식은 agent가 우회 가능 | Hook은 tool 실행 자체를 차단 → CLI보다 강력 |
+| 중간 | Custom Subagents 분리 (.claude/agents/) | 현재 커맨드 내 inline 정의 | 커맨드 경량화 vs self-contained 트레이드오프 |
+| 낮음 | 200k 티어 동결 | 24파일 관리 중 | 새 기능은 1m에만, 200k는 동결 |
