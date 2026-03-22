@@ -9,6 +9,7 @@
  *   node scripts/pipeline-cli.mjs advance <phase>         # 다음 phase로 전환 (검증 포함)
  *   node scripts/pipeline-cli.mjs complete <phase> <json> # phase 완료 마킹 + output 기록
  *   node scripts/pipeline-cli.mjs validate                # 현재 phase 출력 스키마 검증
+ *   node scripts/pipeline-cli.mjs pre-merge <pr>          # PR 머지 전 검증 게이트
  *   node scripts/pipeline-cli.mjs tips [category]         # 랜덤 팁 2개 출력
  *   node scripts/pipeline-cli.mjs worker-reminder [cat]   # 워커용 고정 규칙 + 랜덤 팁 출력
  */
@@ -49,7 +50,13 @@ const PHASE_SCHEMAS = {
     ],
   },
   "run-agents": {
-    required: ["batches_result", "prs_created", "prs_merged", "blocked"],
+    required: [
+      "batches_result",
+      "review_results",
+      "prs_created",
+      "prs_merged",
+      "blocked",
+    ],
   },
   "worktree-clean": { required: ["cleaned"] },
 };
@@ -321,6 +328,19 @@ function cmdComplete(phase, outputJson) {
     }
   }
 
+  // run-agents 구조적 검증 게이트
+  if (phase === "run-agents" && output) {
+    const gateErrors = validateRunAgentsGates(output);
+    if (gateErrors.length > 0) {
+      console.log(`\n❌ run-agents 검증 게이트 실패\n`);
+      gateErrors.forEach((e, i) => console.log(`  [${i + 1}] ${e}`));
+      console.log(
+        `\n문제를 해결한 후 다시 실행하세요.`,
+      );
+      process.exit(1);
+    }
+  }
+
   state.phases[phase].status = "completed";
   state.phases[phase].completedAt = now();
   state.phases[phase].output = output;
@@ -442,6 +462,77 @@ function cmdWorkerReminder(category) {
   console.log("─".repeat(60));
 }
 
+// ── Verification Gates ──────────────────────────────────
+
+function validateRunAgentsGates(output) {
+  const errors = [];
+
+  // Gate 1: 모든 배치에 리뷰 결과가 있어야 함
+  if (Array.isArray(output.review_results)) {
+    const missing = output.review_results.filter(
+      (r) => !r.result || !["PASS", "FAIL", "PARTIAL"].includes(r.result),
+    );
+    if (missing.length > 0) {
+      errors.push(
+        `리뷰 결과가 없거나 유효하지 않은 배치 ${missing.length}개. 각 배치에 result: "PASS"|"FAIL"|"PARTIAL" 필요.`,
+      );
+    }
+  } else {
+    errors.push("review_results가 배열이 아닙니다.");
+  }
+
+  // Gate 2: 머지된 PR이 있으면 각각 이슈 닫기 정보가 있어야 함
+  if (Array.isArray(output.prs_merged) && output.prs_merged.length > 0) {
+    const noIssues = output.prs_merged.filter(
+      (pr) => !pr.closed_issues || pr.closed_issues.length === 0,
+    );
+    if (noIssues.length > 0) {
+      errors.push(
+        `머지된 PR 중 ${noIssues.length}개에 closed_issues가 없습니다. PR body에 Closes #N이 포함되었는지 확인하세요.`,
+      );
+    }
+  }
+
+  return errors;
+}
+
+// ── Pre-merge Command ───────────────────────────────────
+
+async function cmdPreMerge(prNumber) {
+  const { execSync } = await import("child_process");
+
+  console.log(`\n🔍 PR #${prNumber} 머지 전 검증...\n`);
+  const errors = [];
+
+  // Check 1: PR body에 Closes/Fixes #N 포함 여부
+  try {
+    const body = execSync(
+      `gh pr view ${prNumber} --json body --jq ".body"`,
+      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    ).trim();
+
+    const closesPattern = /(Closes|Fixes|Resolves)\s+#\d+/i;
+    if (!closesPattern.test(body)) {
+      errors.push(
+        `PR body에 "Closes #N" 또는 "Fixes #N"이 없습니다. 이슈가 자동으로 닫히지 않습니다.`,
+      );
+    }
+  } catch (e) {
+    errors.push(`gh pr view 실행 실패: ${e.message}`);
+  }
+
+  if (errors.length > 0) {
+    console.log("❌ 머지 전 검증 실패:\n");
+    errors.forEach((e, i) => console.log(`  [${i + 1}] ${e}`));
+    console.log(
+      `\nPR body를 수정한 후 다시 실행: node scripts/pipeline-cli.mjs pre-merge ${prNumber}`,
+    );
+    process.exit(1);
+  }
+
+  console.log("✅ 머지 전 검증 통과. 머지를 진행하세요.");
+}
+
 // ── Helpers ─────────────────────────────────────────────
 
 function findNextPhase(state) {
@@ -528,6 +619,13 @@ switch (command) {
     }
     cmdBumpTip(args.join(" "));
     break;
+  case "pre-merge":
+    if (!args[0]) {
+      console.log("Usage: pipeline-cli.mjs pre-merge <pr-number>");
+      process.exit(1);
+    }
+    cmdPreMerge(args[0]);
+    break;
   default:
     console.log(`Pipeline CLI — 파이프라인 상태 관리 도구
 
@@ -539,6 +637,7 @@ Commands:
   validate                     현재 phase 출력 스키마 검증
   tips [category]              랜덤 팁 2개 출력
   worker-reminder [category]   워커용 고정 규칙 + 랜덤 팁
+  pre-merge <pr-number>        PR 머지 전 검증 (Closes #N 확인)
   add-tip <cat> "<text>" [w]   팁 추가 (중복 시 가중치 증가)
   bump-tip "<search>"          검색어 매칭 팁의 가중치 +1
 
