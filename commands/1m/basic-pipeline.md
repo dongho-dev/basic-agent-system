@@ -145,7 +145,30 @@ Phase 간 이슈 목록 재수집을 최소화한다:
 ```
 
 --confirm 모드: 배치 구성을 보여주고 승인 대기.
-자동 모드: 바로 Phase 4로.
+자동 모드: 바로 세션 브레이크로.
+
+### 컨텍스트 브레이크 (Phase 3 → Phase 4)
+
+Phase 3 완료 시, 상태를 저장하고 **짧은 휴식 후 자동으로 Phase 4를 이어간다.** 컨텍스트 피로로 인한 후반 품질 저하를 방지하기 위해 발견+계획(Phase 1~3)과 실행+정리(Phase 4~6)를 분리된 요청으로 처리한다.
+
+1. pipeline CLI로 Phase 3 완료 기록:
+```bash
+node scripts/pipeline-cli.mjs complete review-issues --output '${배치 구성 JSON}'
+```
+
+2. Phase 1~3 결과를 출력:
+```
+Phase 1~3 완료.
+- 이슈: N개 발견 → V개 유효 → M개 명세 완료
+- 배치: K개, 실행 예정 이슈: J개
+- 10초 후 Phase 4(실행)로 자동 진행합니다.
+```
+
+3. **10초 대기 후 Phase 4부터 자동 재개:**
+```bash
+sleep 10
+```
+Phase 4 진입 시, pipeline CLI에서 상태를 다시 읽어 배치 구성을 로드한다.
 
 ### Phase 4: 실행 (/basic-agents)
 
