@@ -145,46 +145,64 @@ Phase 간 이슈 목록 재수집을 최소화한다:
 ```
 
 --confirm 모드: 배치 구성을 보여주고 승인 대기.
-자동 모드: 바로 세션 브레이크로.
+자동 모드: 바로 에이전트 위임으로.
 
-### 컨텍스트 브레이크 (Phase 3 → Phase 4)
+### 에이전트 위임 (Phase 4~6)
 
-Phase 3 완료 시, 상태를 저장하고 **짧은 휴식 후 자동으로 Phase 4를 이어간다.** 컨텍스트 피로로 인한 후반 품질 저하를 방지하기 위해 발견+계획(Phase 1~3)과 실행+정리(Phase 4~6)를 분리된 요청으로 처리한다.
+Phase 3 완료 시, Phase 4~6을 **별도 에이전트에 위임**한다. 두 가지 목적:
+1. **컨텍스트 피로 방지** — Phase 1~3의 탐색/분석 맥락 없이 fresh context에서 실행
+2. **본체 컨텍스트 절약** — Phase 4~6의 모든 작업이 에이전트 안에서 소화되고, 본체에는 최종 결과만 반환
 
 1. pipeline CLI로 Phase 3 완료 기록:
 ```bash
 node scripts/pipeline-cli.mjs complete review-issues --output '${배치 구성 JSON}'
 ```
 
-2. Phase 1~3 결과를 출력:
+2. Phase 1~3 결과를 사용자에게 출력:
 ```
 Phase 1~3 완료.
 - 이슈: N개 발견 → V개 유효 → M개 명세 완료
 - 배치: K개, 실행 예정 이슈: J개
-- 10초 후 Phase 4(실행)로 자동 진행합니다.
+- Phase 4~6을 에이전트에 위임합니다.
 ```
 
-3. **10초 대기 후 Phase 4부터 자동 재개:**
-```bash
-sleep 10
+3. **Phase 4~6 에이전트 실행:**
 ```
-Phase 4 진입 시, pipeline CLI에서 상태를 다시 읽어 배치 구성을 로드한다.
+Agent({
+  model: "opus",
+  prompt: PHASE_4_6_PROMPT
+})
+```
+
+**에이전트 프롬프트에 포함할 내용:**
+- pipeline CLI 상태 파일 경로 (에이전트가 직접 읽도록)
+- 배치 구성 JSON (이슈 번호, 브랜치명, priority)
+- `--confirm` / 자동 모드 플래그
+- Phase 4~6 실행 지시: `/basic-agents` → `/basic-worktree-clean` → `/basic-report` 순서
+
+**에이전트가 Phase 1~3 맥락 없이 필요한 정보를 얻는 방법:**
+- 배치 구성: 프롬프트에 직접 전달
+- 이슈 명세: `gh issue view`로 GitHub에서 직접 읽기
+- pipeline 상태: `node scripts/pipeline-cli.mjs status`로 직접 읽기
+
+4. 에이전트 완료 후, 본체가 결과를 사용자에게 출력.
 
 ### Phase 4: 실행 (/basic-agents)
 
+**(이하 Phase 4~6은 위임된 에이전트 안에서 실행된다.)**
+
 **`/basic-agents` 커맨드를 그대로 실행한다. 자체 구현 금지.**
-Phase 3의 배치 구성을 `/basic-agents`에 전달하면 된다.
+배치 구성을 `/basic-agents`에 전달하면 된다.
 
 `/basic-agents`가 수행하는 것:
 
 1. Worktree 사전 생성 + 격리 검증
 2. 오케스트레이터 프롬프트 생성 (워커 프롬프트 끝에 **리마인더 + 랜덤 팁** 포함)
 3. 백그라운드 병렬 실행 (polling 금지 — 알림 대기)
-4. 리뷰어 검증 (PASS/FAIL/BLOCKED, 전체 코드 맥락 리뷰, unplannedWrites 명시 검증)
+4. 3단계 리뷰 파이프라인 (PASS/FAIL/BLOCKED, GPT rescue 포함)
 5. PR 생성 + CI 확인
 6. 머지 (사용자 명시 지시 시에만)
 7. **머지 후 관련 이슈 자동 닫기** (`closes #N` 또는 `gh issue close`)
-8. 작업 보고서 작성
 
 ### Phase 4-B: 직접 처리 후속 (직접 처리 경로)
 
@@ -215,7 +233,7 @@ basic-agents 완료 후 (성공/실패 무관) 잔여 worktree를 정리한다.
 # 보고서 작성 + 자기 검증 + 교훈 반영 + push까지 /basic-report가 수행
 ```
 
-보고서 저장 후 터미널 완료 요약 출력:
+**에이전트 완료 시 본체에 반환할 결과:**
 
 ```
 ## Pipeline 완료
