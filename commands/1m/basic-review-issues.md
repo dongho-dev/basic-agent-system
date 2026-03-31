@@ -1,6 +1,6 @@
-> MIS 배치 계획 + 리뷰 레벨 지정 | context_tier: 1m
+> MIS 배치 계획 | context_tier: 1m
 
-명세가 있는 open 이슈를 분석하여 실행 계획을 수립합니다. 충돌 분석, MIS 계산, 배치 구성, 리뷰 레벨 지정까지 수행합니다.
+명세가 있는 open 이슈를 분석하여 실행 계획을 수립합니다. 충돌 분석, MIS 계산, 배치 구성까지 수행합니다.
 
 ## Step 1: 이슈 + PR 수집
 
@@ -64,18 +64,7 @@ MIS 결과를 바탕으로 배치를 구성한다:
 1. **배치당 상한 5~6개**
 2. 명세에 이슈 간 의존이 명시된 경우, 같은 배치에 순서대로 배치
 
-## Step 6: 리뷰 레벨 지정
-
-각 이슈에 L1/L2 리뷰 레벨을 배정한다:
-
-| 레벨 | 대상 |
-|------|------|
-| **L1 (구현 검증)** | 단일 파일 수정, API endpoint, UI 컴포넌트, 버그 수정 |
-| **L2 (아키텍처 검증)** | 다중 파일 연쇄 변경, 데이터 흐름 변경, 새 패턴 도입, 보안 |
-
-**L2 자동 승격**: Write 파일 3개 이상, 프로젝트 핵심 파일(타입 정의, 데이터 레이어, 미들웨어, DB 스키마) 변경, 또는 `priority:high` 라벨.
-
-## Step 7: 보고
+## Step 6: 보고
 
 ```
 ## 실행 계획
@@ -86,12 +75,11 @@ MIS 결과를 바탕으로 배치를 구성한다:
 ### 배치 구성
 
 Batch A (fix/batch-a):
-  - Issue #N: 설명 → 변경 파일들 [L1] [priority:medium]
-  - Issue #M: 설명 → 변경 파일들 [L2] [priority:high]
-    근거: priority:high → L2 자동 승격
+  - Issue #N: 설명 → 변경 파일들 [priority:medium]
+  - Issue #M: 설명 → 변경 파일들 [priority:high]
 
 Batch B (fix/batch-b):
-  - Issue #K: 설명 → 변경 파일들 [L1] [priority:low]
+  - Issue #K: 설명 → 변경 파일들 [priority:low]
 
 Write 파일 겹침: 없음 ✓
 의존 관계: #M → #N (M이 N에 의존, 같은 배치 내 N 먼저 실행)

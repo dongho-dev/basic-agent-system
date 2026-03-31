@@ -4,6 +4,62 @@ GitHub 이슈를 분석하여 구현 명세서를 작성하고 이슈 본문에 
 
 인자: `$ARGUMENTS` (이슈 번호, 예: `42` 또는 `42 57 93` 복수 가능)
 
+## Step 0: 이슈 유효성 검증
+
+명세 작성 전에 각 이슈가 실제로 유효한 문제인지 교차 검증한다. audit이 Sonnet으로 생성한 이슈의 오탐/모호함을 걸러내는 게이트.
+
+1. 대상 이슈의 본문을 일괄 수집:
+```bash
+for n in $ARGUMENTS; do gh issue view "$n" --json number,title,body,labels; done
+```
+
+2. 각 이슈가 언급하는 파일:라인의 **현재 코드**를 직접 읽어 실제 상태를 확인한다.
+
+3. GPT에 이슈 + 코드를 전달하여 유효성 판단:
+
+```
+Agent({
+  subagent_type: "codex:codex-rescue",
+  prompt: ISSUE_VALIDATION_PROMPT
+})
+```
+
+**GPT 프롬프트 구조**:
+```xml
+<task>
+아래 이슈들이 실제로 유효한 문제인지 검증하라.
+각 이슈에 대해: 해당 코드를 확인하고, 문제가 실제로 존재하는지,
+설명이 명확한지, 수정할 가치가 있는지 판단하라.
+</task>
+
+<issues>
+${이슈 본문 + 해당 코드 스니펫}
+</issues>
+
+<structured_output_contract>
+각 이슈에 대해:
+- issue_number: N
+- verdict: valid | invalid | unclear
+- reasoning: 1-2줄 근거
+</structured_output_contract>
+```
+
+4. 본체(Opus)가 GPT 판단 + 자체 코드 확인을 종합하여 최종 결정:
+
+| GPT | Opus 확인 | 결정 |
+|-----|----------|------|
+| valid | valid | **진행** |
+| invalid | invalid | 이슈 닫기 + audit-learning 기록 |
+| valid | invalid | Opus 우선 (코드를 직접 봤으므로), 스킵 |
+| invalid | valid | 진행 (GPT 의견 참고만) |
+| unclear | — | 이슈에 clarification 코멘트 + 스킵 |
+
+**reject/unclear 처리**:
+- reject: `gh issue close <N> -c "자동 검증 결과 오탐 판정: {사유}"` + `audit-learning.json` false_positive 추가
+- unclear: `gh issue comment <N> -b "명세 작성을 위해 추가 정보 필요: {질문}"` + 해당 이슈는 이번 실행에서 스킵
+
+유효 판정된 이슈만 Step 1로 진행한다.
+
 ## Step 1: 분배 + 실행
 
 이슈 개수에 따라 처리 방식을 결정한다.
@@ -126,17 +182,76 @@ Agent는 완료 후 본체에게 요약만 반환한다:
 - 라인 번호는 현재 코드 기준으로 정확히 기재
 - 테스트 명세는 프로젝트의 테스트 프레임워크에 맞게 작성 (package.json 확인)
 
-## Step 3: 결과 보고
+## Step 3: 명세 리뷰
+
+명세 작성 완료 후, GPT 교차 리뷰를 수행한다. Opus가 작성한 명세의 접근 방식 오류, 누락 엣지케이스, 과잉/과소 범위를 잡는 게이트.
+
+1. 작성 완료된 명세들을 수집 (`gh issue view`로 업데이트된 본문 재읽기)
+2. GPT에 명세 + 관련 코드를 전달:
+
+```
+Agent({
+  subagent_type: "codex:codex-rescue",
+  prompt: SPEC_REVIEW_PROMPT
+})
+```
+
+**GPT 프롬프트 구조**:
+```xml
+<task>
+아래 구현 명세들을 엄격하게 리뷰하라.
+각 명세의 접근 방식이 올바른지, 빠진 엣지케이스가 있는지,
+변경 파일 범위가 적절한지, 테스트 명세가 충분한지 검토하라.
+Claude가 작성한 명세이므로 Claude의 편향에 주의하라.
+</task>
+
+<specs>
+${각 이슈 명세 본문 + 관련 코드}
+</specs>
+
+<structured_output_contract>
+각 명세에 대해:
+- issue_number: N
+- verdict: approve | revise
+- findings: [{ severity: "error|warning", description: "..." }]
+  (revise일 때만, 구체적으로 무엇을 수정해야 하는지)
+</structured_output_contract>
+```
+
+3. 본체(Opus)가 GPT 리뷰를 검토:
+
+| GPT 판정 | 후속 |
+|----------|------|
+| approve | 그대로 진행 |
+| revise (warning만) | 해당 부분 자체 검토 → 타당하면 명세 수정 + `gh issue edit`, 아니면 기각 |
+| revise (error 포함) | 반드시 해당 부분 재분석 → 명세 수정 + `gh issue edit` |
+
+**수정 시 원칙**: GPT가 지적한 구체적 finding에 대해서만 수정. 명세 전체를 다시 쓰지 않는다.
+
+## Step 4: 결과 보고
 
 ```
 ## 명세 작성 완료
 
-**명세:** N개 이슈 작성 / **건너뜀:** M개 (이미 명세 있음)
+### Step 0: 이슈 검증
+- 입력: N개 / 유효: V개 / 오탐 닫힘: R개 / 모호 스킵: U개
 
+| 이슈 | 제목 | GPT 판정 | Opus 판정 | 결과 |
+|------|------|----------|----------|------|
+| #N   | ...  | valid    | valid    | ✅ 진행 |
+| #M   | ...  | invalid  | invalid  | ❌ 닫힘 (사유) |
+| #K   | ...  | unclear  | —        | ⏸️ 스킵 (질문 코멘트) |
+
+### Step 1-2: 명세 작성
 | 이슈 | 제목 | 변경 파일 수 | 테스트 수 | 상태 |
 |------|------|-------------|----------|------|
 | #N   | ...  | N개         | N개      | ✅   |
-| #M   | ...  | N개         | N개      | ❌ 실패 사유 |
+
+### Step 3: 명세 리뷰
+| 이슈 | GPT 판정 | findings | 수정 여부 |
+|------|----------|----------|----------|
+| #N   | approve  | —        | —        |
+| #M   | revise   | edge case 누락 1건 | ✅ 수정됨 |
 
 다음 단계: `/basic-review-issues`로 계획 → `/basic-agents`로 실행
 ```
